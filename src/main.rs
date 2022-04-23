@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use clap::Parser;
+use serde_json::{Result, Value};
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -14,5 +15,9 @@ struct Cli {
 
 fn main() {
     let cli = Cli::parse();
-    println!("{:?}", cli);
+    let table = cli.table;
+    let item = cli.item;
+    let v: Value = serde_json::from_str(&item).expect("Item is not a valid JSON.");
+
+    println!("Item: {:?}, Numeric: {:?}", v["item"], v["numeric_item"]);
 }
