@@ -1,13 +1,18 @@
-/// Search for a pattern in a file and display the lines that contain it.
-#[derive(Parser)]
+#![allow(unused)]
+
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
 struct Cli {
-    /// The pattern to look for
-    pattern: String,
-    /// The path to the file to read
-    #[clap(parse(from_os_str))]
-    path: std::path::PathBuf,
+    #[clap(short, long)]
+    table: String,
+
+    #[clap(short, long)]
+    item: String,
 }
 
 fn main() {
-    println!("Hello, world!");
+    let cli = Cli::parse();
+    println!("{:?}", cli);
 }
