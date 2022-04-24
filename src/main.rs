@@ -14,7 +14,7 @@ use aws_sdk_dynamodb::{Client, Error as DynError};
 use aws_sdk_dynamodb::client::fluent_builders::Query;
 use aws_sdk_dynamodb::model::{AttributeValue, Get};
 use custom_err::DynHdlErr;
-use crate::DynHdlErr::{ParsingErr, PKNotFoundErr, GetItemErr};
+use crate::DynHdlErr::{Parsing, PKNotFound, GetItem};
 
 const DEFAULT_REGION: &str = "sa-east-1";
 
@@ -33,27 +33,28 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> () {
-    match exec().await {
+    SimpleLogger::new()
+        .with_level(LevelFilter::Info)
+        .init()
+        .unwrap();
+    let cli = Cli::parse();
+
+    match exec(cli).await {
         Ok(_) => {
             exit(exitcode::OK);
         }
         Err(e) => {
-            error!("{}", e);
+            error!("Error: {}", e);
             match e {
-                DynHdlErr::ParsingErr { item, err_msg } => exit(exitcode::USAGE),
-                _ => exit(exitcode::USAGE)
+                DynHdlErr::Parsing { item, err_msg } => exit(exitcode::DATAERR),
+                DynHdlErr::PKNotFound { pk_name, item } => exit(exitcode::DATAERR),
+                DynHdlErr::GetItem { pk, table, err_msg } => exit(exitcode::IOERR),
             }
         }
     }
 }
 
-async fn exec() -> Result<(), DynHdlErr> {
-    SimpleLogger::new()
-        .with_level(LevelFilter::Debug)
-        .init()
-        .unwrap();
-    let cli = Cli::parse();
-
+async fn exec(cli: Cli) -> Result<(), DynHdlErr> {
     let table = cli.table;
     let item = cli.item;
     let pk_name = cli.pk;
@@ -63,9 +64,8 @@ async fn exec() -> Result<(), DynHdlErr> {
     info!("Parsing Item ({}) JSON", item);
     let parse_res = serde_json::from_str(&item);
     if parse_res.is_err() {
-        //error!("Not possible to parse item. Error: {}.", parse_res.unwrap_err());
         let err = parse_res.unwrap_err();
-        return Err(ParsingErr { item, err_msg: err.to_string()});
+        return Err(Parsing { item: item.to_string(), err_msg: err.to_string() });
     }
     let item: Value = parse_res.unwrap();
     info!("Item JSON parsed into ({})", item);
@@ -73,10 +73,7 @@ async fn exec() -> Result<(), DynHdlErr> {
     info!("Retrieving Partition Key ({}) of Item ({}).", pk_name, item);
     let pk = &item[&pk_name];
     if pk.is_null() {
-        // FIXME: Compilation error.
-        return Err(PKNotFoundErr { pk_name, item: item. });
-        // return Err(Error::new(format!("Cannot find Partition Key ({}) of \
-         //                              Item ({}). Exiting.", pk_name, item)));
+        return Err(PKNotFound { pk_name, item: item.to_string() });
     }
     info!("Partition Key ({}) has successfully retrieved of Item ({}).", pk, item);
 
@@ -86,18 +83,13 @@ async fn exec() -> Result<(), DynHdlErr> {
     let client = Client::new(&config);
 
     let get_item_res = get_item(&client, &table, &pk_name,
-                                &pk.to_string())
+                                pk)
         .send()
         .await;
     if get_item_res.is_err() {
-        // error!("Not possible to retrieve item with Partition Key ({}) of Table ({}).\
-        //Error: {}", pk_name, table, get_item_res.unwrap_err());
         let err = get_item_res.unwrap_err();
 
-        // FIXME: Compilation error.
-        return Err(GetItemErr { pk: pk.to_string(), table, err_msg: err.to_string()});
-        //return parse_res.map_err(|err| Error::new(format!("Not possible to retrieve item with Partition Key ({}) of Table ({}).\
-       //Error: {}", pk_name, table, err.unwrap_err())));
+        return Err(GetItem { pk: pk.to_string(), table: table.to_string(), err_msg: err.to_string() });
     }
     let query = get_item_res.unwrap();
     if query.count == 0 {
@@ -111,14 +103,18 @@ async fn exec() -> Result<(), DynHdlErr> {
     Ok(())
 }
 
-fn get_item(client: &Client, table_name: &str, pk_name: &str, pk: &str) -> Query {
-    // FIXME: Checking why pk has double quotes and remove it if necessary.
-    debug!("Querying by {}", pk.to_string());
+fn get_item(client: &Client, table: &str, pk_name: &str, pk: &Value) -> Query {
+    info!("Querying by key ({}) as PK ({}) in Table ({}).", pk, pk_name, table);
+    let pk = match pk.is_number() {
+        true => AttributeValue::N(pk.to_string()),
+        false => AttributeValue::S(pk.as_str().unwrap().to_string()),
+    };
+
     client
         .query()
-        .table_name(table_name)
+        .table_name(table)
         .key_condition_expression("#pk = :pk")
         .expression_attribute_names("#pk", pk_name.to_string())
-        .expression_attribute_values(":pk", AttributeValue::S(pk.to_string()))
+        .expression_attribute_values(":pk", pk)
 }
 
