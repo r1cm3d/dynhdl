@@ -48,7 +48,8 @@ async fn main() -> () {
             match e {
                 DynHdlErr::Parsing { item, err_msg } => exit(exitcode::DATAERR),
                 DynHdlErr::PKNotFound { pk_name, item } => exit(exitcode::DATAERR),
-                DynHdlErr::GetItem { pk, table, err_msg } => exit(exitcode::IOERR),
+                DynHdlErr::GetItem { pk_name, pk, table, err_msg } => exit(exitcode::IOERR),
+                DynHdlErr::TooManyRecords { pk_name, pk, table } => exit(exitcode::USAGE),
             }
         }
     }
@@ -89,15 +90,19 @@ async fn exec(cli: Cli) -> Result<(), DynHdlErr> {
     if get_item_res.is_err() {
         let err = get_item_res.unwrap_err();
 
-        return Err(GetItem { pk: pk.to_string(), table: table.to_string(), err_msg: err.to_string() });
+        return Err(GetItem { pk_name, pk: pk.to_string(), table: table.to_string(), err_msg: err.to_string() });
     }
     let query = get_item_res.unwrap();
-    if query.count == 0 {
-        info!("No item found in Table ({}) with Partition Key ({}). Creating a new one with PutItem request.", table, pk)
-    } else {
-        let items = query.items.unwrap();
-        let i = items.iter().next().unwrap();
-        info!("Item ({:?}) found in Table ({}) with Partition Key ({}).", i, table, pk_name)
+    match query.count {
+        0 => info!("No item found in Table ({}) with Partition Key ({}). Creating a new one with PutItem request.", table, pk),
+        1 => {
+            let items = query.items.unwrap();
+            let i = items.iter().next().unwrap();
+            info!("Item ({:?}) found in Table ({}) with Partition Key ({}).", i, table, pk_name)
+        }
+        _ => {
+            return Err(DynHdlErr::TooManyRecords { pk_name, pk: pk.to_string(), table });
+        }
     }
 
     Ok(())

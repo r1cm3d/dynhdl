@@ -5,7 +5,8 @@ use std::fmt::{Formatter, Result, Display};
 pub enum DynHdlErr {
     Parsing { item: String, err_msg: String },
     PKNotFound { pk_name: String, item: String },
-    GetItem { pk: String, table: String, err_msg: String },
+    GetItem { pk_name: String, pk: String, table: String, err_msg: String },
+    TooManyRecords { pk_name: String, pk: String, table: String },
 }
 
 impl Error for DynHdlErr {}
@@ -20,8 +21,11 @@ impl Display for DynHdlErr {
             DynHdlErr::PKNotFound { pk_name, item } => {
                 write!(f, "cannot find Partition Key ({}) of Item ({}). Exiting.", pk_name, item)
             }
-            DynHdlErr::GetItem { pk, table, err_msg } => {
-                write!(f, "not possible to retrieve item with Partition Key ({}) of Table ({}). Error: {}", pk, table, err_msg)
+            DynHdlErr::GetItem { pk_name, pk, table, err_msg } => {
+                write!(f, "not possible to retrieve item with Partition Key ({}) named ({}) of Table ({}). Error: {}", pk, pk_name, table, err_msg)
+            }
+            DynHdlErr::TooManyRecords { pk_name, pk, table } => {
+                write!(f, "Partition Key ({}) named ({}) returns more than one record for Table ({}).", pk_name, pk, table)
             }
         }
     }
