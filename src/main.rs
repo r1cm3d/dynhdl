@@ -2,9 +2,11 @@
 
 mod custom_err;
 
+use std::borrow::Borrow;
 use std::fmt::{Display, Error, Formatter};
 use std::result::Result;
 use std::process::exit;
+use std::collections::HashMap;
 use clap::Parser;
 use serde_json::{Result as SerdeResult, Value};
 use log::{debug, error, info, LevelFilter};
@@ -13,8 +15,8 @@ use aws_config::meta::region::RegionProviderChain;
 use aws_sdk_dynamodb::{Client, Error as DynError};
 use aws_sdk_dynamodb::client::fluent_builders::Query;
 use aws_sdk_dynamodb::model::{AttributeValue, Get};
+use custom_err::DynHdlErr::{Parsing, PKNotFound, GetItem, TooManyRecords};
 use custom_err::DynHdlErr;
-use crate::DynHdlErr::{Parsing, PKNotFound, GetItem};
 
 const DEFAULT_REGION: &str = "sa-east-1";
 
@@ -57,44 +59,47 @@ async fn main() -> () {
 
 async fn exec(cli: Cli) -> Result<(), DynHdlErr> {
     let table = cli.table;
-    let item = cli.item;
+    let raw_item = cli.item;
     let pk_name = cli.pk;
     info!("Arguments have successfully parsed into Table ({}), Partition \
-    Key ({}) and Item ({})", table, pk_name, item);
+    Key ({}) and Item ({})", table, pk_name, raw_item);
 
-    info!("Parsing Item ({}) JSON", item);
-    let parse_res = serde_json::from_str(&item);
-    if parse_res.is_err() {
-        let err = parse_res.unwrap_err();
-        return Err(Parsing { item: item.to_string(), err_msg: err.to_string() });
-    }
-    let item: Value = parse_res.unwrap();
-    info!("Item JSON parsed into ({})", item);
+    info!("Parsing Item ({}) JSON", raw_item);
+    let item: Result<HashMap<String, Value>, serde_json::Error> = serde_json::from_str(&raw_item);
+    let item = match item {
+        Ok(item) => item,
+        Err(err) => return Err(Parsing { item: raw_item.to_string(), err_msg: err.to_string() })
+    };
+    info!("Item JSON parsed into ({})", raw_item);
 
-    info!("Retrieving Partition Key ({}) of Item ({}).", pk_name, item);
-    let pk = &item[&pk_name];
-    if pk.is_null() {
-        return Err(PKNotFound { pk_name, item: item.to_string() });
-    }
-    info!("Partition Key ({}) has successfully retrieved of Item ({}).", pk, item);
+    info!("Retrieving Partition Key ({}) of Item ({}).", pk_name, raw_item);
+    let pk = &item.get(&pk_name);
+    let pk = match pk {
+        Some(pk) => pk,
+        None => return Err(PKNotFound { pk_name, item: raw_item.to_string() })
+    };
+    info!("Partition Key ({}) has successfully retrieved of Item ({}).", pk, raw_item);
 
+    // TODO: group AWS stuff into its own module.
     let region_provider = RegionProviderChain::default_provider()
         .or_else(DEFAULT_REGION);
     let config = aws_config::from_env().region(region_provider).load().await;
     let client = Client::new(&config);
 
-    let get_item_res = get_item(&client, &table, &pk_name,
-                                pk)
+    let query = get_item(&client, &table, &pk_name,
+                         pk)
         .send()
         .await;
-    if get_item_res.is_err() {
-        let err = get_item_res.unwrap_err();
+    let query = match query {
+        Ok(query) => query,
+        Err(err) => return Err(GetItem { pk_name: pk_name.to_string(), pk: pk.to_string(), table: table.to_string(), err_msg: err.to_string() })
+    };
 
-        return Err(GetItem { pk_name, pk: pk.to_string(), table: table.to_string(), err_msg: err.to_string() });
-    }
-    let query = get_item_res.unwrap();
     match query.count {
-        0 => info!("No item found in Table ({}) with Partition Key ({}). Creating a new one with PutItem request.", table, pk),
+        0 => {
+            info!("No item found in Table ({}) with Partition Key ({}). Creating a new one with PutItem request.", table, pk);
+            add_item(&client, &table, item);
+        }
         1 => {
             let items = query.items.unwrap();
             let i = items.iter().next().unwrap();
@@ -121,5 +126,46 @@ fn get_item(client: &Client, table: &str, pk_name: &str, pk: &Value) -> Query {
         .key_condition_expression("#pk = :pk")
         .expression_attribute_names("#pk", pk_name.to_string())
         .expression_attribute_values(":pk", pk)
+}
+
+// FIXME: this function is buggy.
+async fn add_item(client: &Client, table: &str, v: HashMap<String, Value>) -> Result<(), Error> {
+    //let user_av = AttributeValue::S(username.into());
+    //let type_av = AttributeValue::S(p_type.into());
+    //let age_av = AttributeValue::S(age.into());
+    //let first_av = AttributeValue::S(first.into());
+    //let last_av = AttributeValue::S(last.into());
+
+    let request = client.put_item().table_name(table);
+
+    // TODO: Test it
+    // - Add issue to implement tree of items recursively.
+    let request = v.iter()
+        .map(|x| {
+            let (k, v) = x;
+            return if v.is_number() {
+                (k, AttributeValue::N(v.to_string()))
+            } else {
+                (k, AttributeValue::S(v.as_str().unwrap().to_string()))
+            };
+        })
+        .map(|x| {
+            let (k, v) = x;
+            return request.borrow().clone().item(k, v).clone();
+        }).last().unwrap();
+
+    //let request = client
+    //    .put_item()
+    //    .table_name(table)
+    //    .item("username", user_av)
+    //    .item("account_type", type_av)
+    //    .item("age", age_av)
+    //    .item("first_name", first_av)
+    //    .item("last_name", last_av);
+
+    // FIXME: change it after make request work.
+    request.send().await.expect("err");
+
+    Ok(())
 }
 
